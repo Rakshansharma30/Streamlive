@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  api:
+    build: ./api
+    container_name: vm-migration-api
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./api:/app
+      - ./model:/app/model
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - vm-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: ./dashboard
+    container_name: vm-migration-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard:/app
+    environment:
+      - PYTHONPATH=/app
+      - API_URL=http://api:8001
+      - PROMETHEUS_URL=http://prometheus:9090
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - vm-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - vm-network
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "9100:9100"
+    networks:
+      - vm-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3000:3000"
+    networks:
+      - vm-network
+    restart: unless-stopped
+
+  stress-simulator:
+    image: alpine:latest
+    container_name: stress-simulator
+    command: >
+      sh -c "
+        apk add --no-cache stress-ng curl &&
+        echo 'Stress simulator ready. Run: docker exec stress-simulator stress-ng --cpu 4 --io 2 --vm 2 --vm-bytes 512M --timeout 300s' &&
+        sleep infinity
+      "
+    networks:
+      - vm-network
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  vm-network:
+    driver: bridge
